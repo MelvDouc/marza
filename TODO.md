@@ -1,5 +1,6 @@
 # To do
 
-- [ ] Support MacOS.
-- [ ] Detect Linux musl.
-- [ ] Check if server archive exists before downloading.
+- [X] Detect Linux musl.
+- [X] Check if server archive exists before downloading.
+- [X] Support MacOS.
+- [X] Write unit tests.

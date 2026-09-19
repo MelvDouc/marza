@@ -1,17 +1,14 @@
-.PHONY: build run exec stop remove
+.PHONY: build run stop remove
 
 CONTAINER_ENGINE = podman
-IMAGE_NAME = marza-img
-CONTAINER_NAME = marza-ctn
+IMAGE_NAME = marza
+CONTAINER_NAME = marza-container
 
 build:
 	$(CONTAINER_ENGINE) build -t $(IMAGE_NAME) .
 
 run:
-	$(CONTAINER_ENGINE) run -d --rm --name $(CONTAINER_NAME) -v $(PWD)/src:/root/.local/bin:z $(IMAGE_NAME)
-
-exec:
-	$(CONTAINER_ENGINE) exec -it $(CONTAINER_NAME) bash
+	$(CONTAINER_ENGINE) run $(ARGS) --name $(CONTAINER_NAME) $(IMAGE_NAME)
 
 stop:
 	$(CONTAINER_ENGINE) container stop $(CONTAINER_NAME)

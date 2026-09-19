@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 set -o pipefail
-[[ $MARZA_DEBUG -eq 1 ]] && set -x
+[[ $MARZA_DEBUG == 1 ]] && set -x
 
 declare -r XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 declare -r ROOT_DIR="${MARZA_HOME:-$XDG_DATA_HOME/marza}"
@@ -49,8 +49,73 @@ command_exists() {
 confirm() {
 	local answer
 	echo -en "$1 [y/N] "
-	read -rp answer
+	read -r answer
 	[[ ${answer,,} =~ ^y(es)? ]]
+}
+
+# Assumes platform is Linux.
+is_musl() {
+	# Musl's ldd writes "musl libc (arch)" to stderr and exits 1.
+	command_exists ldd &&
+		ldd --version 2>&1 | grep -qi musl &&
+		return 0
+
+	# Fallback when ldd is absent (busybox-only systems).
+	[[ -n "$(ls /lib/ld-musl-* 2>/dev/null)" ]]
+}
+
+detect_platform() {
+	local -r kernel_name=$(uname -s)
+
+	case "$kernel_name" in
+	Linux)
+		echo linux
+		;;
+	Darwin)
+		echo darwin
+		;;
+	*)
+		echo -e "Platform ${CLR_ERROR}${kernel_name}${CLR_} is not supported." >&2
+		return 1
+		;;
+	esac
+}
+
+# Get an architecture name as used in `nodejs.org` URLs.
+detect_architecture() {
+	local -r arch=$(uname -m)
+
+	case "$arch" in
+	x86_64 | amd64)
+		is_musl && echo x64-musl || echo x64
+		;;
+	aarch64 | arm64)
+		echo arm64
+		;;
+	armv7l | ppc64le | s390x) # ARMv7 | Power LE | System Z
+		echo "$arch"
+		;;
+	*)
+		echo -e "Architecture ${CLR_ERROR}${arch}${CLR_} is not supported." >&2
+		return 1
+		;;
+	esac
+}
+
+# Check if xz or gzip is installed and return the corresponding extension.
+get_archive_extension() {
+	command_exists xz && {
+		echo xz
+		return
+	}
+
+	command_exists gzip && {
+		echo gz
+		return
+	}
+
+	echo -e "Please install ${CLR_ERROR}xz${CLR_} or ${CLR_ERROR}gzip${CLR_} to continue." >&2
+	return 1
 }
 
 # @param url
@@ -60,7 +125,7 @@ download_file() {
 	local -r out_file=$2
 
 	if command_exists curl; then
-		curl -sSLo "$out_file" "$url"
+		curl -sSfLo "$out_file" "$url"
 		return $?
 	fi
 
@@ -118,10 +183,10 @@ parse_index() {
 }
 
 # @param version
-# @param archive
+# @param server_archive
 get_checksum() {
 	local -r version=$1
-	local -r archive=$2
+	local -r server_archive=$2
 	local -r checksum_file="$CACHE_DIR/checksums/$version"
 	local checksum
 
@@ -133,10 +198,11 @@ get_checksum() {
 		}
 	fi
 
-	checksum=$(awk -v file="$archive" '{ if($2 == file) print $1 }' "$checksum_file")
+	checksum=$(awk -v f="$server_archive" '{ if($2 == f) print $1 }' "$checksum_file")
 
 	if [[ -z $checksum ]]; then
-		echo "Could not determine ${CLR_ERROR}checksum${CLR_}." >&2
+		echo -e "Could not determine ${CLR_ERROR}checksum${CLR_}.." >&2
+		echo -e "Version ${CLR_ERROR}${version}${CLR_} might not support your platform or architecture." >&2
 		return 1
 	fi
 
@@ -155,27 +221,6 @@ verify_checksums() {
 		print_error "Checksum mismatch." >&2
 		return 1
 	fi
-}
-
-# Get an architecture name as used in `nodejs.org` URLs.
-get_architecture() {
-	local -r arch=$(uname -m)
-
-	case "$arch" in
-	x86_64)
-		echo x64
-		;;
-	aarch64)
-		echo arm64
-		;;
-	armv7l | ppc64le | s390x) # ARMv7 | Power LE | System Z
-		echo "$arch"
-		;;
-	*)
-		echo -e "Architecture ${CLR_ERROR}${arch}${CLR_} is not supported." >&2
-		return 1
-		;;
-	esac
 }
 
 get_lts_version() {
@@ -217,7 +262,7 @@ get_full_version() {
 validate_version() {
 	local -r version=${1/#v/}
 
-	if [[ $version == "lts" ]]; then
+	if [[ $version == lts ]]; then
 		get_lts_version
 	elif [[ $version =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
 		get_full_version "$version"
@@ -231,19 +276,14 @@ validate_version() {
 
 # Print versions installed based on the directory names in `$VERSIONS_DIR`.
 list_installed_versions() {
-	local version current_version
-	current_version=$(get_current_version 2>/dev/null) || current_version="_"
+	local version current_version output
+	current_version=$(get_current_version)
 	mkdir -p "$VERSIONS_DIR"
 
 	for version in $(command ls "$VERSIONS_DIR"); do
-		case "$version" in
-		"${current_version}")
-			echo -e "$version ${CLR_VERSION}(current)${CLR_}"
-			;;
-		*)
-			echo "$version"
-			;;
-		esac
+		output="$version"
+		[[ $version == "$current_version" ]] && output+=" ${CLR_VERSION}(current)${CLR_}"
+		echo -e "$output"
 	done
 }
 
@@ -274,14 +314,18 @@ list_versions() {
 }
 
 # @param version_dir
-# @param tmp_archive
+# @param tmp_archive - Must have an "xz" or "gz" extension.
 extract_version() {
+	# Map an extension to the corresponding extraction package.
+	local -rA EXTRACTORS=([xz]=xz [gz]=gzip)
 	local -r version_dir=$1
 	local -r tmp_archive=$2
+	local -r extension=${tmp_archive##*.}
+	local -r extractor=${EXTRACTORS[$extension]}
 
-	# The Node version is contained a in a directory which is the only file in the archive.
+	# The Node version is contained in a directory which is the only file in the archive.
 	# Extract the directory's contents into `$version_dir`.
-	if ! tar -xJf "$tmp_archive" --strip-components=1 -C "$version_dir"; then
+	if ! tar --"$extractor" -xf "$tmp_archive" --strip-components=1 -C "$version_dir"; then
 		print_error "Failed to extract archive." >&2
 		return 1
 	fi
@@ -290,17 +334,18 @@ extract_version() {
 # @param version
 # @param omit_use_message - Pass "true" to not print a message showing how to use the newly installed version.
 install_version() {
-	if ! command_exists xz; then
-		echo "Please install ${CLR_ERROR}xz${CLR_} to continue." >&2
-		return 1
-	fi
+	local platform arch version archive_ext server_checksum
 
-	local arch version server_checksum
-	arch=$(get_architecture) || return $?
-	version="$(validate_version "$1")" || return $?
+	{
+		platform=$(detect_platform) &&
+			arch=$(detect_architecture) &&
+			version="$(validate_version "$1")" &&
+			archive_ext=$(get_archive_extension)
+	} || return $?
+
 	local -r omit_use_message=$2
 	local -r version_dir="$VERSIONS_DIR/$version"
-	local -r server_archive="node-v${version}-linux-${arch}.tar.xz"
+	local -r server_archive="node-v${version}-${platform}-${arch}.tar.${archive_ext}"
 	local -r tmp_archive="$TEMP_DIR/$server_archive"
 
 	if is_version_installed "$version"; then
@@ -323,7 +368,7 @@ install_version() {
 
 	echo -e "Version ${CLR_VERSION}${version}${CLR_} was successfully installed."
 
-	if [[ $omit_use_message == "true" ]]; then
+	if [[ $omit_use_message != "true" ]]; then
 		echo -e "Run ${CLR_CODE}marza use ${version}${CLR_} to set it as your current version."
 	fi
 }
@@ -332,7 +377,7 @@ install_version() {
 use_version() {
 	local version current_version
 	version="$(validate_version "$1")" || return $?
-	current_version=$(get_current_version 2>/dev/null)
+	current_version=$(get_current_version)
 
 	if [[ $version == "$current_version" ]]; then
 		echo "Version ${CLR_VERSION}${version}${CLR_} is already the current version."
@@ -341,7 +386,7 @@ use_version() {
 
 	if ! is_version_installed "$version"; then
 		confirm "Version ${CLR_VERSION}${version}${CLR_} is not installed. Install it?" || return 1
-		install_version "$version" true || return $?
+		install_version "$version" "true" || return $?
 	fi
 
 	rm -f "$CURRENT_VERSION_LINK"
@@ -378,9 +423,12 @@ clear_cache() {
 # MAIN
 # ===== ===== ===== ===== =====
 
+# STOP HERE when running unit tests.
+[[ -n $MARZA_TESTING ]] && return
+
 if (($# == 0)); then
 	echo "Please provide a ${CLR_ERROR}subcommand${CLR_}. Run ${CLR_ERROR}marza help${CLR_} for more info." >&2
-	exit
+	exit 1
 fi
 
 SUBCOMMAND=$1
@@ -388,23 +436,22 @@ shift
 
 case "$SUBCOMMAND" in
 install)
-	install_version "$2"
+	install_version "$1"
 	;;
 use)
-	use_version "$2"
+	use_version "$1"
 	;;
 remove | rm)
-	remove_version "$2"
+	remove_version "$1"
 	;;
 list | ls)
-	list_versions "$2"
+	list_versions "$1"
 	;;
 clear-cache)
 	clear_cache
 	;;
 help | --help | -h)
-	usage >&2
-	exit 1
+	usage
 	;;
 *)
 	echo -e "Unknown subcommand ${CLR_ERROR}${SUBCOMMAND}${CLR_}.\n" >&2
