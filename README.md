@@ -19,9 +19,9 @@ exec $SHELL
 ## Dependencies
 
 - You need to have either `curl` or `wget` installed to download Node versions.
-- You also need `xz` (a.k.a. `xz-utils` on Debian) for the script to extract tarballs.
+- You also need `gzip` or `xz` (a.k.a. `xz-utils` on Debian) for the script to extract tarballs.
 
-`curl` and `xz` are probably already installed if you're using a regular distro but not if you're in a minimal environment like a container.
+`curl` and `gzip` / `xz` are probably already installed if you're using a regular distro but not if you're in a minimal environment like a container.
 
 ## Commands
 
