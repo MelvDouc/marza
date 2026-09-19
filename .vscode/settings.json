@@ -1,0 +1,12 @@
+{
+  "files.associations": {
+    "{**,*}/src/*": "shellscript"
+  },
+  "cSpell.words": [
+    "armv",
+    "linux",
+    "marza",
+    "podman",
+    "tildify"
+  ]
+}

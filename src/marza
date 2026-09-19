@@ -1,0 +1,414 @@
+#!/usr/bin/env bash
+
+set -o pipefail
+[[ $MARZA_DEBUG -eq 1 ]] && set -x
+
+declare -r XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+declare -r ROOT_DIR="${MARZA_HOME:-$XDG_DATA_HOME/marza}"
+declare -r VERSIONS_DIR="$ROOT_DIR/versions"
+declare -r TEMP_DIR="$ROOT_DIR/tmp"
+declare -r CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/marza"
+declare -r CURRENT_VERSION_LINK="$ROOT_DIR/bin"
+
+declare -r CLR_ERROR=$'\e[31m'    # red
+declare -r CLR_CODE=$'\e[32m'     # green
+declare -r CLR_VERSION=$'\e[33m'  # yellow
+declare -r CLR_LOCATION=$'\e[36m' # cyan
+declare -r CLR_=$'\e[0m'
+
+usage() {
+	cat <<-'EOF'
+		Marza node version manager.
+
+		# SUBCOMMANDS
+		install <version>         Install a version. Must match the pattern /^v?\d+(\.\d+){2}?$/.
+		remove, rm <version>      Uninstall a version.
+		use <version>             Set the default version to use.
+		list, ls (remote)         List locally installed or remotely available versions.
+		clear-cache               Force marza to re-download the online index (info about available versions).
+		help                      Print this message.
+
+		# EXAMPLES
+		marza install v24.21.0
+		marza install lts
+		marza use 24
+		marza ls remote | column # Get a more readable output in columns.
+
+		# ENVIRONMENT VARIABLES
+		MARZA_HOME      Location of the app. Defaults to $XDG_DATA_HOME/marza or ~/.local/share/marza.
+		MARZA_LS_MAX    How many versions to list when running `marza ls remote`. Defaults to 200.
+	EOF
+}
+
+# @param command
+command_exists() {
+	command -v "$1" >/dev/null
+}
+
+# @param question
+confirm() {
+	local answer
+	echo -en "$1 [y/N] "
+	read -rp answer
+	[[ ${answer,,} =~ ^y(es)? ]]
+}
+
+# @param url
+# @param out_file
+download_file() {
+	local -r url=$1
+	local -r out_file=$2
+
+	if command_exists curl; then
+		curl -sSLo "$out_file" "$url"
+		return $?
+	fi
+
+	if command_exists wget; then
+		wget -qO "$out_file" "$url"
+		return $?
+	fi
+
+	echo "Please install ${CLR_ERROR}curl${CLR_} or ${CLR_ERROR}wget${CLR_} to continue." >&2
+	return 1
+}
+
+# @param error_message
+print_error() {
+	printf "%s%s%s\n" "$CLR_ERROR" "$1" "$CLR_"
+}
+
+# @param version - Must be in `major.minor.patch` format.
+is_version_installed() {
+	local -r version=$1
+	[[ -e $VERSIONS_DIR/$version ]]
+}
+
+get_current_version() {
+	[[ -L $CURRENT_VERSION_LINK ]] || return 1
+
+	local -r bin_dir=$(realpath "$CURRENT_VERSION_LINK")
+	local -r version_dir=$(dirname "$bin_dir")
+	basename "$version_dir"
+}
+
+# Get the path of the version index file.
+# Download it once a day when the script is run.
+get_index() {
+	local -r today=$(date +%Y%m%d)
+	local -r index="$CACHE_DIR/index/index-$today.tab"
+
+	if ! [[ -e $index ]]; then
+		mkdir -p "$CACHE_DIR/index"
+		download_file "https://nodejs.org/dist/index.tab" "$index" || {
+			echo "Could not download ${CLR_ERROR}online index${CLR_}." >&2
+			return 1
+		}
+	fi
+
+	echo "$index"
+}
+
+# Output last versions in the format `major.minor.patch lts`.
+# @param index
+parse_index() {
+	local -r index=$1
+	local -ri max=${MARZA_LS_MAX:-200}
+	awk -v max=$((max + 1)) 'NR > 1 && NR <= max { print substr($1, 2), $10 }' "$index"
+}
+
+# @param version
+# @param archive
+get_checksum() {
+	local -r version=$1
+	local -r archive=$2
+	local -r checksum_file="$CACHE_DIR/checksums/$version"
+	local checksum
+
+	if ! [[ -e $checksum_file ]]; then
+		mkdir -p "$CACHE_DIR/checksums"
+		download_file "https://nodejs.org/dist/v${version}/SHASUMS256.txt" "$checksum_file" || {
+			echo "Could not download ${CLR_ERROR}checksum file${CLR_}." >&2
+			return 1
+		}
+	fi
+
+	checksum=$(awk -v file="$archive" '{ if($2 == file) print $1 }' "$checksum_file")
+
+	if [[ -z $checksum ]]; then
+		echo "Could not determine ${CLR_ERROR}checksum${CLR_}." >&2
+		return 1
+	fi
+
+	echo "$checksum"
+}
+
+# @param server_checksum
+# @param tmp_archive
+verify_checksums() {
+	local -r server_checksum=$1
+	local -r tmp_archive=$2
+	local local_checksum
+	local_checksum=$(sha256sum "$tmp_archive" | cut -d " " -f 1) || return $?
+
+	if [[ $local_checksum != "$server_checksum" ]]; then
+		print_error "Checksum mismatch." >&2
+		return 1
+	fi
+}
+
+# Get an architecture name as used in `nodejs.org` URLs.
+get_architecture() {
+	local -r arch=$(uname -m)
+
+	case "$arch" in
+	x86_64)
+		echo x64
+		;;
+	aarch64)
+		echo arm64
+		;;
+	armv7l | ppc64le | s390x) # ARMv7 | Power LE | System Z
+		echo "$arch"
+		;;
+	*)
+		echo -e "Architecture ${CLR_ERROR}${arch}${CLR_} is not supported." >&2
+		return 1
+		;;
+	esac
+}
+
+get_lts_version() {
+	local index version lts
+	index=$(get_index) || return $?
+
+	while IFS=$' ' read -r version lts; do
+		[[ $lts != "-" ]] && {
+			echo "$version" # normalized
+			return
+		}
+	done < <(parse_index "$index")
+
+	echo -e "Could not determine ${CLR_ERROR}LTS version${CLR_}." >&2
+	return 1
+}
+
+# @param partial_version - e.g. "22" or "22.1".
+get_full_version() {
+	local -r partial_version=$1
+	local index version lts major major_minor
+	index=$(get_index) || return $?
+
+	while IFS=$' ' read -r version lts; do
+		major=${version%%.*}
+		major_minor=${version%.*}
+
+		if [[ $partial_version == "$major" || $partial_version == "$major_minor" ]]; then
+			echo "$version"
+			return
+		fi
+	done < <(parse_index "$index")
+
+	echo -e "Could not determine ${CLR_ERROR}exact version ${partial_version}${CLR_}." >&2
+	return 1
+}
+
+# @param version - Can be in short or long format or just "lts".
+validate_version() {
+	local -r version=${1/#v/}
+
+	if [[ $version == "lts" ]]; then
+		get_lts_version
+	elif [[ $version =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+		get_full_version "$version"
+	elif [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+		echo "$version"
+	else
+		print_error "Invalid version." >&2
+		return 1
+	fi
+}
+
+# Print versions installed based on the directory names in `$VERSIONS_DIR`.
+list_installed_versions() {
+	local version current_version
+	current_version=$(get_current_version 2>/dev/null) || current_version="_"
+	mkdir -p "$VERSIONS_DIR"
+
+	for version in $(command ls "$VERSIONS_DIR"); do
+		case "$version" in
+		"${current_version}")
+			echo -e "$version ${CLR_VERSION}(current)${CLR_}"
+			;;
+		*)
+			echo "$version"
+			;;
+		esac
+	done
+}
+
+list_remote_versions() {
+	local index lts_version version lts output
+	index=$(get_index) || return $?
+	lts_version=$(get_lts_version 2>/dev/null)
+
+	while IFS=$' ' read -r version lts; do
+		output=""
+		is_version_installed "$version" && output+="${CLR_LOCATION}*${CLR_} "
+		output+="$version"
+		[[ $version == "$lts_version" ]] && output+=" ${CLR_VERSION}LTS${CLR_}"
+		echo -e "$output"
+	done < <(parse_index "$index" | tac)
+}
+
+# @param location - "remote" or blank.
+list_versions() {
+	case "$1" in
+	remote)
+		list_remote_versions
+		;;
+	*)
+		list_installed_versions
+		;;
+	esac
+}
+
+# @param version_dir
+# @param tmp_archive
+extract_version() {
+	local -r version_dir=$1
+	local -r tmp_archive=$2
+
+	# The Node version is contained a in a directory which is the only file in the archive.
+	# Extract the directory's contents into `$version_dir`.
+	if ! tar -xJf "$tmp_archive" --strip-components=1 -C "$version_dir"; then
+		print_error "Failed to extract archive." >&2
+		return 1
+	fi
+}
+
+# @param version
+# @param omit_use_message - Pass "true" to not print a message showing how to use the newly installed version.
+install_version() {
+	if ! command_exists xz; then
+		echo "Please install ${CLR_ERROR}xz${CLR_} to continue." >&2
+		return 1
+	fi
+
+	local arch version server_checksum
+	arch=$(get_architecture) || return $?
+	version="$(validate_version "$1")" || return $?
+	local -r omit_use_message=$2
+	local -r version_dir="$VERSIONS_DIR/$version"
+	local -r server_archive="node-v${version}-linux-${arch}.tar.xz"
+	local -r tmp_archive="$TEMP_DIR/$server_archive"
+
+	if is_version_installed "$version"; then
+		echo -e "Version ${CLR_ERROR}${version}${CLR_} is already installed." >&2
+		return 1
+	fi
+
+	mkdir -p "$TEMP_DIR" "$version_dir"
+	server_checksum=$(get_checksum "$version" "$server_archive") &&
+		download_file "https://nodejs.org/dist/v$version/$server_archive" "$tmp_archive" &&
+		verify_checksums "$server_checksum" "$tmp_archive" &&
+		extract_version "$version_dir" "$tmp_archive"
+	local -ri status=$?
+	rm -f "$tmp_archive"
+
+	if [[ $status -ne 0 ]]; then
+		rm -rf "$version_dir"
+		return $status
+	fi
+
+	echo -e "Version ${CLR_VERSION}${version}${CLR_} was successfully installed."
+
+	if [[ $omit_use_message == "true" ]]; then
+		echo -e "Run ${CLR_CODE}marza use ${version}${CLR_} to set it as your current version."
+	fi
+}
+
+# @param version
+use_version() {
+	local version current_version
+	version="$(validate_version "$1")" || return $?
+	current_version=$(get_current_version 2>/dev/null)
+
+	if [[ $version == "$current_version" ]]; then
+		echo "Version ${CLR_VERSION}${version}${CLR_} is already the current version."
+		return
+	fi
+
+	if ! is_version_installed "$version"; then
+		confirm "Version ${CLR_VERSION}${version}${CLR_} is not installed. Install it?" || return 1
+		install_version "$version" true || return $?
+	fi
+
+	rm -f "$CURRENT_VERSION_LINK"
+	ln -sr "$VERSIONS_DIR/$version/bin" "$CURRENT_VERSION_LINK" || return $?
+	echo -e "Current node version was set to ${CLR_VERSION}${version}${CLR_}."
+}
+
+# @param version
+remove_version() {
+	local version current_version
+	version="$(validate_version "$1")" || return $?
+	current_version=$(get_current_version 2>/dev/null)
+
+	if ! is_version_installed "$version"; then
+		echo -e "Version ${CLR_ERROR}${version}${CLR_} is not installed." >&2
+		return 1
+	fi
+
+	[[ $version == "$current_version" ]] && rm -f "$CURRENT_VERSION_LINK"
+	rm -rf "${VERSIONS_DIR:?}/$version"
+	echo -e "Version ${CLR_VERSION}${version}${CLR_} was removed."
+}
+
+clear_cache() {
+	if ! rm -f "${CACHE_DIR:?}/index"/*; then
+		print_error "The index cache could not be cleared." >&2
+		return 1
+	fi
+
+	echo "The index cache was cleared."
+}
+
+# ===== ===== ===== ===== =====
+# MAIN
+# ===== ===== ===== ===== =====
+
+if (($# == 0)); then
+	echo "Please provide a ${CLR_ERROR}subcommand${CLR_}. Run ${CLR_ERROR}marza help${CLR_} for more info." >&2
+	exit
+fi
+
+SUBCOMMAND=$1
+shift
+
+case "$SUBCOMMAND" in
+install)
+	install_version "$2"
+	;;
+use)
+	use_version "$2"
+	;;
+remove | rm)
+	remove_version "$2"
+	;;
+list | ls)
+	list_versions "$2"
+	;;
+clear-cache)
+	clear_cache
+	;;
+help | --help | -h)
+	usage >&2
+	exit 1
+	;;
+*)
+	echo -e "Unknown subcommand ${CLR_ERROR}${SUBCOMMAND}${CLR_}.\n" >&2
+	usage >&2
+	exit 1
+	;;
+esac
