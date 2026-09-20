@@ -3,18 +3,18 @@
 set -o pipefail
 [[ $MARZA_DEBUG == 1 ]] && set -x
 
-declare -r XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
-declare -r ROOT_DIR="${MARZA_HOME:-$XDG_DATA_HOME/marza}"
-declare -r VERSIONS_DIR="$ROOT_DIR/versions"
-declare -r TEMP_DIR="$ROOT_DIR/tmp"
-declare -r CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/marza"
-declare -r CURRENT_VERSION_LINK="$ROOT_DIR/bin"
+XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
+ROOT_DIR=${MARZA_HOME:-$XDG_DATA_HOME/marza}
+VERSIONS_DIR="$ROOT_DIR/versions"
+TEMP_DIR="$ROOT_DIR/tmp"
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/marza"
+CURRENT_VERSION_LINK="$ROOT_DIR/bin"
 
-declare -r CLR_ERROR=$'\e[31m'    # red
-declare -r CLR_CODE=$'\e[32m'     # green
-declare -r CLR_VERSION=$'\e[33m'  # yellow
-declare -r CLR_LOCATION=$'\e[36m' # cyan
-declare -r CLR_=$'\e[0m'
+CLR_ERROR=$'\e[31m'    # red
+CLR_CODE=$'\e[32m'     # green
+CLR_VERSION=$'\e[33m'  # yellow
+CLR_LOCATION=$'\e[36m' # cyan
+CLR_=$'\e[0m'
 
 usage() {
 	cat <<-'EOF'
@@ -104,15 +104,15 @@ detect_architecture() {
 
 # Check if xz or gzip is installed and return the corresponding extension.
 get_archive_extension() {
-	command_exists xz && {
+	if command_exists xz; then
 		echo xz
 		return
-	}
+	fi
 
-	command_exists gzip && {
+	if command_exists gzip; then
 		echo gz
 		return
-	}
+	fi
 
 	echo -e "Please install ${CLR_ERROR}xz${CLR_} or ${CLR_ERROR}gzip${CLR_} to continue." >&2
 	return 1
@@ -140,7 +140,7 @@ download_file() {
 
 # @param error_message
 print_error() {
-	printf "%s%s%s\n" "$CLR_ERROR" "$1" "$CLR_"
+	printf '%s%s%s\n' "$CLR_ERROR" "$1" "$CLR_"
 }
 
 # @param version - Must be in `major.minor.patch` format.
@@ -165,10 +165,11 @@ get_index() {
 
 	if ! [[ -e $index ]]; then
 		mkdir -p "$CACHE_DIR/index"
-		download_file "https://nodejs.org/dist/index.tab" "$index" || {
+
+		if ! download_file "https://nodejs.org/dist/index.tab" "$index"; then
 			echo "Could not download ${CLR_ERROR}online index${CLR_}." >&2
 			return 1
-		}
+		fi
 	fi
 
 	echo "$index"
@@ -192,10 +193,11 @@ get_checksum() {
 
 	if ! [[ -e $checksum_file ]]; then
 		mkdir -p "$CACHE_DIR/checksums"
-		download_file "https://nodejs.org/dist/v${version}/SHASUMS256.txt" "$checksum_file" || {
-			echo "Could not download ${CLR_ERROR}checksum file${CLR_}." >&2
+
+		if ! download_file "https://nodejs.org/dist/v$version/SHASUMS256.txt" "$checksum_file"; then
+			echo -e "Could not download ${CLR_ERROR}checksum file${CLR_}." >&2
 			return 1
-		}
+		fi
 	fi
 
 	checksum=$(awk -v f="$server_archive" '{ if($2 == f) print $1 }' "$checksum_file")
@@ -215,10 +217,10 @@ verify_checksums() {
 	local -r server_checksum=$1
 	local -r tmp_archive=$2
 	local local_checksum
-	local_checksum=$(sha256sum "$tmp_archive" | cut -d " " -f 1) || return $?
+	local_checksum=$(sha256sum "$tmp_archive" | cut -d ' ' -f 1) || return $?
 
 	if [[ $local_checksum != "$server_checksum" ]]; then
-		print_error "Checksum mismatch." >&2
+		print_error 'Checksum mismatch.' >&2
 		return 1
 	fi
 }
@@ -228,10 +230,10 @@ get_lts_version() {
 	index=$(get_index) || return $?
 
 	while IFS=$' ' read -r version lts; do
-		[[ $lts != "-" ]] && {
+		if [[ $lts != '-' ]]; then
 			echo "$version" # normalized
 			return
-		}
+		fi
 	done < <(parse_index "$index")
 
 	echo -e "Could not determine ${CLR_ERROR}LTS version${CLR_}." >&2
@@ -281,7 +283,7 @@ list_installed_versions() {
 	mkdir -p "$VERSIONS_DIR"
 
 	for version in $(command ls "$VERSIONS_DIR"); do
-		output="$version"
+		output=$version
 		[[ $version == "$current_version" ]] && output+=" ${CLR_VERSION}(current)${CLR_}"
 		echo -e "$output"
 	done
@@ -293,9 +295,9 @@ list_remote_versions() {
 	lts_version=$(get_lts_version 2>/dev/null)
 
 	while IFS=$' ' read -r version lts; do
-		output=""
+		output=''
 		is_version_installed "$version" && output+="${CLR_LOCATION}*${CLR_} "
-		output+="$version"
+		output+=$version
 		[[ $version == "$lts_version" ]] && output+=" ${CLR_VERSION}LTS${CLR_}"
 		echo -e "$output"
 	done < <(parse_index "$index" | tac)
@@ -326,7 +328,7 @@ extract_version() {
 	# The Node version is contained in a directory which is the only file in the archive.
 	# Extract the directory's contents into `$version_dir`.
 	if ! tar --"$extractor" -xf "$tmp_archive" --strip-components=1 -C "$version_dir"; then
-		print_error "Failed to extract archive." >&2
+		print_error 'Failed to extract archive.' >&2
 		return 1
 	fi
 }
@@ -339,7 +341,7 @@ install_version() {
 	{
 		platform=$(detect_platform) &&
 			arch=$(detect_architecture) &&
-			version="$(validate_version "$1")" &&
+			version=$(validate_version "$1") &&
 			archive_ext=$(get_archive_extension)
 	} || return $?
 
@@ -412,11 +414,11 @@ remove_version() {
 
 clear_cache() {
 	if ! rm -f "${CACHE_DIR:?}/index"/*; then
-		print_error "The index cache could not be cleared." >&2
+		print_error 'The index cache could not be cleared.' >&2
 		return 1
 	fi
 
-	echo "The index cache was cleared."
+	echo 'The index cache was cleared.'
 }
 
 # ===== ===== ===== ===== =====
