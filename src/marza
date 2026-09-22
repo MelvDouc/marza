@@ -68,16 +68,16 @@ detect_platform() {
 	local -r kernel_name=$(uname -s)
 
 	case "$kernel_name" in
-	Linux)
-		echo linux
-		;;
-	Darwin)
-		echo darwin
-		;;
-	*)
-		echo -e "Platform ${CLR_ERROR}${kernel_name}${CLR_} is not supported." >&2
-		return 1
-		;;
+		Linux)
+			echo linux
+			;;
+		Darwin)
+			echo darwin
+			;;
+		*)
+			echo -e "Platform ${CLR_ERROR}${kernel_name}${CLR_} is not supported." >&2
+			return 1
+			;;
 	esac
 }
 
@@ -86,19 +86,19 @@ detect_architecture() {
 	local -r arch=$(uname -m)
 
 	case "$arch" in
-	x86_64 | amd64)
-		is_musl && echo x64-musl || echo x64
-		;;
-	aarch64 | arm64)
-		echo arm64
-		;;
-	armv7l | ppc64le | s390x) # ARMv7 | Power LE | System Z
-		echo "$arch"
-		;;
-	*)
-		echo -e "Architecture ${CLR_ERROR}${arch}${CLR_} is not supported." >&2
-		return 1
-		;;
+		x86_64 | amd64)
+			is_musl && echo x64-musl || echo x64
+			;;
+		aarch64 | arm64)
+			echo arm64
+			;;
+		armv7l | ppc64le | s390x) # ARMv7 | Power LE | System Z
+			echo "$arch"
+			;;
+		*)
+			echo -e "Architecture ${CLR_ERROR}${arch}${CLR_} is not supported." >&2
+			return 1
+			;;
 	esac
 }
 
@@ -271,18 +271,20 @@ validate_version() {
 	elif [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 		echo "$version"
 	else
-		print_error "Invalid version." >&2
+		print_error 'Invalid version.' >&2
 		return 1
 	fi
 }
 
 # Print versions installed based on the directory names in `$VERSIONS_DIR`.
 list_installed_versions() {
+	shopt -s nullglob
+
 	local version current_version output
 	current_version=$(get_current_version)
 	mkdir -p "$VERSIONS_DIR"
 
-	for version in $(command ls "$VERSIONS_DIR"); do
+	for version in "$VERSIONS_DIR"/*; do
 		output=$version
 		[[ $version == "$current_version" ]] && output+=" ${CLR_VERSION}(current)${CLR_}"
 		echo -e "$output"
@@ -306,12 +308,12 @@ list_remote_versions() {
 # @param location - "remote" or blank.
 list_versions() {
 	case "$1" in
-	remote)
-		list_remote_versions
-		;;
-	*)
-		list_installed_versions
-		;;
+		remote)
+			list_remote_versions
+			;;
+		*)
+			list_installed_versions
+			;;
 	esac
 }
 
@@ -333,33 +335,40 @@ extract_version() {
 	fi
 }
 
+download_version() {
+	local -r version=$1
+	local -r server_archive=$2
+	local -r tmp_archive=$3
+	local server_checksum
+	server_checksum=$(get_checksum "$version" "$server_archive") || return $?
+
+	download_file "https://nodejs.org/dist/v$version/$server_archive" "$tmp_archive" &&
+		verify_checksums "$server_checksum" "$tmp_archive" &&
+		extract_version "$VERSIONS_DIR/$version" "$tmp_archive"
+}
+
 # @param version
 # @param omit_use_message - Pass "true" to not print a message showing how to use the newly installed version.
 install_version() {
 	local platform arch version archive_ext server_checksum
-
-	{
-		platform=$(detect_platform) &&
-			arch=$(detect_architecture) &&
-			version=$(validate_version "$1") &&
-			archive_ext=$(get_archive_extension)
-	} || return $?
-
-	local -r omit_use_message=$2
-	local -r version_dir="$VERSIONS_DIR/$version"
-	local -r server_archive="node-v${version}-${platform}-${arch}.tar.${archive_ext}"
-	local -r tmp_archive="$TEMP_DIR/$server_archive"
+	version=$(validate_version "$1") || return $?
 
 	if is_version_installed "$version"; then
 		echo -e "Version ${CLR_ERROR}${version}${CLR_} is already installed." >&2
 		return 1
 	fi
 
+	platform=$(detect_platform) || return $?
+	arch=$(detect_architecture) || return $?
+	archive_ext=$(get_archive_extension) || return $?
+
+	local -r omit_use_message=$2
+	local -r version_dir="$VERSIONS_DIR/$version"
+	local -r server_archive="node-v${version}-${platform}-${arch}.tar.${archive_ext}"
+	local -r tmp_archive="$TEMP_DIR/$server_archive"
+
 	mkdir -p "$TEMP_DIR" "$version_dir"
-	server_checksum=$(get_checksum "$version" "$server_archive") &&
-		download_file "https://nodejs.org/dist/v$version/$server_archive" "$tmp_archive" &&
-		verify_checksums "$server_checksum" "$tmp_archive" &&
-		extract_version "$version_dir" "$tmp_archive"
+	download_version "$version" "$server_archive" "$tmp_archive"
 	local -ri status=$?
 	rm -f "$tmp_archive"
 
@@ -370,7 +379,7 @@ install_version() {
 
 	echo -e "Version ${CLR_VERSION}${version}${CLR_} was successfully installed."
 
-	if [[ $omit_use_message != "true" ]]; then
+	if [[ $omit_use_message != 'true' ]]; then
 		echo -e "Run ${CLR_CODE}marza use ${version}${CLR_} to set it as your current version."
 	fi
 }
@@ -437,27 +446,27 @@ SUBCOMMAND=$1
 shift
 
 case "$SUBCOMMAND" in
-install)
-	install_version "$1"
-	;;
-use)
-	use_version "$1"
-	;;
-remove | rm)
-	remove_version "$1"
-	;;
-list | ls)
-	list_versions "$1"
-	;;
-clear-cache)
-	clear_cache
-	;;
-help | --help | -h)
-	usage
-	;;
-*)
-	echo -e "Unknown subcommand ${CLR_ERROR}${SUBCOMMAND}${CLR_}.\n" >&2
-	usage >&2
-	exit 1
-	;;
+	install)
+		install_version "$1"
+		;;
+	use)
+		use_version "$1"
+		;;
+	remove | rm)
+		remove_version "$1"
+		;;
+	list | ls)
+		list_versions "$1"
+		;;
+	clear-cache)
+		clear_cache
+		;;
+	help | --help | -h)
+		usage
+		;;
+	*)
+		echo -e "Unknown subcommand ${CLR_ERROR}${SUBCOMMAND}${CLR_}.\n" >&2
+		usage >&2
+		exit 1
+		;;
 esac
