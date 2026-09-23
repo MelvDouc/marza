@@ -183,48 +183,6 @@ parse_index() {
 	awk -v max=$((max + 1)) 'NR > 1 && NR <= max { print substr($1, 2), $10 }' "$index"
 }
 
-# @param version
-# @param server_archive
-get_checksum() {
-	local -r version=$1
-	local -r server_archive=$2
-	local -r checksum_file="$CACHE_DIR/checksums/$version"
-	local checksum
-
-	if ! [[ -e $checksum_file ]]; then
-		mkdir -p "$CACHE_DIR/checksums"
-
-		if ! download_file "https://nodejs.org/dist/v$version/SHASUMS256.txt" "$checksum_file"; then
-			echo -e "Could not download ${CLR_ERROR}checksum file${CLR_}." >&2
-			return 1
-		fi
-	fi
-
-	checksum=$(awk -v f="$server_archive" '{ if($2 == f) print $1 }' "$checksum_file")
-
-	if [[ -z $checksum ]]; then
-		echo -e "Could not determine ${CLR_ERROR}checksum${CLR_}.." >&2
-		echo -e "Version ${CLR_ERROR}${version}${CLR_} might not support your platform or architecture." >&2
-		return 1
-	fi
-
-	echo "$checksum"
-}
-
-# @param server_checksum
-# @param tmp_archive
-verify_checksums() {
-	local -r server_checksum=$1
-	local -r tmp_archive=$2
-	local local_checksum
-	local_checksum=$(sha256sum "$tmp_archive" | cut -d ' ' -f 1) || return $?
-
-	if [[ $local_checksum != "$server_checksum" ]]; then
-		print_error 'Checksum mismatch.' >&2
-		return 1
-	fi
-}
-
 get_lts_version() {
 	local index version lts
 	index=$(get_index) || return $?
@@ -336,22 +294,40 @@ extract_version() {
 	fi
 }
 
+# @param version
+# @param server_archive - Filename of the archive to be downloaded from https://nodejs.org.
 download_version() {
 	local -r version=$1
 	local -r server_archive=$2
-	local -r tmp_archive=$3
-	local server_checksum
-	server_checksum=$(get_checksum "$version" "$server_archive") || return $?
+	local -r version_dir=$VERSIONS_DIR/$version
+	local -r tmp_archive=$TEMP_DIR/$server_archive
+	local -r checksum_file=$CACHE_DIR/checksums/$version
 
+	if ! [[ -e $checksum_file ]]; then
+		mkdir -p "$CACHE_DIR/checksums"
+
+		if ! download_file "https://nodejs.org/dist/v$version/SHASUMS256.txt" "$checksum_file"; then
+			echo -e "Could not download ${CLR_ERROR}checksum file${CLR_}." >&2
+			return 1
+		fi
+	fi
+
+	mkdir -p "$TEMP_DIR" "$version_dir"
 	download_file "https://nodejs.org/dist/v$version/$server_archive" "$tmp_archive" &&
-		verify_checksums "$server_checksum" "$tmp_archive" &&
-		extract_version "$VERSIONS_DIR/$version" "$tmp_archive"
+		cd "$TEMP_DIR" &&
+		sha256sum -c "$checksum_file" --status --ignore-missing &&
+		extract_version "$version_dir" "$tmp_archive"
+
+	local -ri status=$?
+	rm -f "$tmp_archive"
+	(( status != 0 )) && rm -rf "${version_dir:?}"
+	return $status
 }
 
 # @param version
 # @param omit_use_message - Pass "true" to not print a message showing how to use the newly installed version.
 install_version() {
-	local platform arch version archive_ext server_checksum
+	local platform arch version archive_ext
 	version=$(validate_version "$1") || return $?
 
 	if is_version_installed "$version"; then
@@ -364,20 +340,10 @@ install_version() {
 	archive_ext=$(get_archive_extension) || return $?
 
 	local -r omit_use_message=$2
-	local -r version_dir="$VERSIONS_DIR/$version"
 	local -r server_archive="node-v${version}-${platform}-${arch}.tar.${archive_ext}"
 	local -r tmp_archive="$TEMP_DIR/$server_archive"
 
-	mkdir -p "$TEMP_DIR" "$version_dir"
-	download_version "$version" "$server_archive" "$tmp_archive"
-	local -ri status=$?
-	rm -f "$tmp_archive"
-
-	if [[ $status -ne 0 ]]; then
-		rm -rf "$version_dir"
-		return $status
-	fi
-
+	download_version "$version" "$server_archive" || return $?
 	echo -e "Version ${CLR_VERSION}${version}${CLR_} was successfully installed."
 
 	if [[ $omit_use_message != 'true' ]]; then
