@@ -9,9 +9,10 @@ Just download the `marza` script to somewhere on your `$PATH`, e.g.
 ```bash
 mkdir -p ~/.local/bin
 curl -sSLo ~/.local/bin/marza https://raw.githubusercontent.com/MelvDouc/marza/refs/heads/main/src/marza
+chmod +x ~/.local/bin/marza
 cat << 'EOF' >> ~/.bashrc
-export MARZA_HOME="$XDG_DATA_HOME/marza"
-PATH="$MARZA_HOME/bin:$PATH"
+	export MARZA_HOME="$XDG_DATA_HOME/marza"
+	PATH="$MARZA_HOME/bin:$PATH"
 EOF
 exec $SHELL
 ```
