@@ -439,7 +439,7 @@ clear_cache() {
 [[ -n $MARZA_TESTING ]] && return
 
 if (($# == 0)); then
-	echo "Please provide a ${CLR_ERROR}subcommand${CLR_}. Run ${CLR_ERROR}marza help${CLR_} for more info." >&2
+	echo -e "Please provide a ${CLR_ERROR}subcommand${CLR_}. Run ${CLR_ERROR}marza help${CLR_} for more info." >&2
 	exit 1
 fi
 
