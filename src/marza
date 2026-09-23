@@ -280,11 +280,12 @@ validate_version() {
 list_installed_versions() {
 	shopt -s nullglob
 
-	local version current_version output
+	local dir version current_version output
 	current_version=$(get_current_version)
 	mkdir -p "$VERSIONS_DIR"
 
-	for version in "$VERSIONS_DIR"/*; do
+	for dir in "$VERSIONS_DIR"/*; do
+		version=$(basename "$dir")
 		output=$version
 		[[ $version == "$current_version" ]] && output+=" ${CLR_VERSION}(current)${CLR_}"
 		echo -e "$output"
