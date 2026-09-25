@@ -327,7 +327,7 @@ download_version() {
 # @param version
 # @param omit_use_message - Pass "true" to not print a message showing how to use the newly installed version.
 install_version() {
-	local platform arch version archive_ext
+	local version platform arch archive_ext
 	version=$(validate_version "$1") || return $?
 
 	if is_version_installed "$version"; then
@@ -341,7 +341,6 @@ install_version() {
 
 	local -r omit_use_message=$2
 	local -r server_archive="node-v${version}-${platform}-${arch}.tar.${archive_ext}"
-	local -r tmp_archive="$TEMP_DIR/$server_archive"
 
 	download_version "$version" "$server_archive" || return $?
 	echo -e "Version ${CLR_VERSION}${version}${CLR_} was successfully installed."
