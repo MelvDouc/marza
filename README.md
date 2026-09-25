@@ -14,7 +14,7 @@ cat << 'EOF' >> ~/.bashrc
 	export MARZA_HOME="$XDG_DATA_HOME/marza"
 	PATH="$MARZA_HOME/bin:$PATH"
 EOF
-exec $SHELL
+exec $SHELL # or `source ~/.bashrc` if you don't want to reload the shell.
 ```
 
 ## Dependencies
@@ -36,7 +36,7 @@ Download a NodeJS version. It'll be located in `$MARZA_HOME/versions/<major>.<mi
 
 ### use
 
-Set the current Node version to one that's installed. It's important that `$MARZA_HOME/versions/current/bin` be on your path as it contains the `node` and `npm` executables.
+Set the current Node version to one that's installed. It's important that `$MARZA_HOME/bin` be on your path as it contains the `node` and `npm` executables.
 
 ### remove
 
