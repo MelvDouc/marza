@@ -5,10 +5,10 @@ set -o pipefail
 
 XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
 ROOT_DIR=${MARZA_HOME:-$XDG_DATA_HOME/marza}
-VERSIONS_DIR="$ROOT_DIR/versions"
-TEMP_DIR="$ROOT_DIR/tmp"
-CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/marza"
-CURRENT_VERSION_LINK="$ROOT_DIR/bin"
+VERSIONS_DIR=$ROOT_DIR/versions
+TEMP_DIR=$ROOT_DIR/tmp
+CACHE_DIR=${XDG_CACHE_HOME:-$HOME/.cache}/marza
+CURRENT_VERSION_LINK=$ROOT_DIR/bin
 
 CLR_ERROR=$'\e[31m'    # red
 CLR_CODE=$'\e[32m'     # green
@@ -17,8 +17,8 @@ CLR_LOCATION=$'\e[36m' # cyan
 CLR_=$'\e[0m'
 
 usage() {
-	cat <<-'EOF'
-		Marza node version manager.
+	cat <<- 'EOF'
+		Marza, NodeJS version manager.
 
 		# SUBCOMMANDS
 		install <version>         Install a version. Must match the pattern /^v?\d+(\.\d+){2}?$/.
@@ -42,15 +42,15 @@ usage() {
 
 # @param command
 command_exists() {
-	command -v "$1" >/dev/null
+	command -v "$1" &> /dev/null
 }
 
 # @param question
 confirm() {
-	local answer
+	local -l answer
 	echo -en "$1 [y/N] "
 	read -r answer
-	[[ ${answer,,} =~ ^y(es)? ]]
+	[[ $answer =~ ^y(es)? ]]
 }
 
 # Assumes platform is Linux.
@@ -61,18 +61,20 @@ is_musl() {
 		return 0
 
 	# Fallback when ldd is absent (busybox-only systems).
-	[[ -n "$(ls /lib/ld-musl-* 2>/dev/null)" ]]
+	[[ -n "$(ls /lib/ld-musl-* 2> /dev/null)" ]]
 }
 
+# @param platform_ref
 detect_platform() {
+	local -rn platform_ref=$1
 	local -r kernel_name=$(uname -s)
 
 	case "$kernel_name" in
 		Linux)
-			echo linux
+			platform_ref=linux
 			;;
 		Darwin)
-			echo darwin
+			platform_ref=darwin
 			;;
 		*)
 			echo -e "Platform ${CLR_ERROR}${kernel_name}${CLR_} is not supported." >&2
@@ -82,35 +84,40 @@ detect_platform() {
 }
 
 # Get an architecture name as used in `nodejs.org` URLs.
+# @param arch_ref
 detect_architecture() {
-	local -r arch=$(uname -m)
+	local -rn arch_ref=$1
+	local -r machine=$(uname -m)
 
-	case "$arch" in
+	case "$machine" in
 		x86_64 | amd64)
-			is_musl && echo x64-musl || echo x64
+			is_musl && arch_ref=x64-musl || arch_ref=x64
 			;;
 		aarch64 | arm64)
-			echo arm64
+			arch_ref=arm64
 			;;
 		armv7l | ppc64le | s390x) # ARMv7 | Power LE | System Z
-			echo "$arch"
+			arch_ref=$machine
 			;;
 		*)
-			echo -e "Architecture ${CLR_ERROR}${arch}${CLR_} is not supported." >&2
+			echo -e "Architecture ${CLR_ERROR}${machine}${CLR_} is not supported." >&2
 			return 1
 			;;
 	esac
 }
 
 # Check if xz or gzip is installed and return the corresponding extension.
-get_archive_extension() {
+# @param ext_ref
+set_archive_extension() {
+	local -rn ext_ref=$1
+
 	if command_exists xz; then
-		echo xz
+		ext_ref=xz
 		return
 	fi
 
 	if command_exists gzip; then
-		echo gz
+		ext_ref=gz
 		return
 	fi
 
@@ -145,34 +152,39 @@ print_error() {
 
 # @param version - Must be in `major.minor.patch` format.
 is_version_installed() {
-	local -r version=$1
-	[[ -e $VERSIONS_DIR/$version ]]
+	[[ -e $VERSIONS_DIR/$1 ]]
 }
 
-get_current_version() {
+# @param current_version_ref
+set_current_version() {
 	[[ -L $CURRENT_VERSION_LINK ]] || return 1
 
+	local -rn current_version_ref=$1
 	local -r bin_dir=$(realpath "$CURRENT_VERSION_LINK")
 	local -r version_dir=$(dirname "$bin_dir")
-	basename "$version_dir"
+	# shellcheck disable=2034
+	current_version_ref=$(basename "$version_dir")
 }
 
 # Get the path of the version index file.
 # Download it once a day when the script is run.
-get_index() {
+# @param index_ref
+set_index() {
+	local -rn index_ref=$1
 	local -r today=$(date +%Y%m%d)
-	local -r index="$CACHE_DIR/index/index-$today.tab"
+	local -r output="$CACHE_DIR/index/index-$today.tab"
 
-	if ! [[ -e $index ]]; then
+	if ! [[ -e $output ]]; then
 		mkdir -p "$CACHE_DIR/index"
 
-		if ! download_file "https://nodejs.org/dist/index.tab" "$index"; then
+		if ! download_file 'https://nodejs.org/dist/index.tab' "$output"; then
 			echo "Could not download ${CLR_ERROR}online index${CLR_}." >&2
 			return 1
 		fi
 	fi
 
-	echo "$index"
+	# shellcheck disable=2034
+	index_ref=$output
 }
 
 # Output last versions in the format `major.minor.patch lts`.
@@ -180,16 +192,20 @@ get_index() {
 parse_index() {
 	local -r index=$1
 	local -ri max=${MARZA_LS_MAX:-200}
-	awk -v max=$((max + 1)) 'NR > 1 && NR <= max { print substr($1, 2), $10 }' "$index"
+	awk -v max=$(( max + 1 )) 'NR > 1 && NR <= max { print substr($1, 2), $10 }' "$index"
 }
 
-get_lts_version() {
-	local index version lts
-	index=$(get_index) || return $?
+# @param lts_version_ref
+# @param index
+set_lts_version() {
+	local -rn lts_version_ref=$1
+	local -r index=$2
+	local v lts
 
-	while IFS=$' ' read -r version lts; do
+	while IFS=$' ' read -r v lts; do
 		if [[ $lts != '-' ]]; then
-			echo "$version" # normalized
+			# shellcheck disable=2034
+			lts_version_ref=$v
 			return
 		fi
 	done < <(parse_index "$index")
@@ -198,18 +214,21 @@ get_lts_version() {
 	return 1
 }
 
+# @param full_version_ref
 # @param partial_version - e.g. "22" or "22.1".
-get_full_version() {
-	local -r partial_version=$1
-	local index version lts major major_minor
-	index=$(get_index) || return $?
+set_full_version() {
+	local -rn full_version_ref=$1
+	local -r partial_version=$2
+	local index v _lts major major_minor
+	set_index index || return $?
 
-	while IFS=$' ' read -r version lts; do
-		major=${version%%.*}
-		major_minor=${version%.*}
+	while IFS=$' ' read -r v _lts; do
+		major=${v%%.*}
+		major_minor=${v%.*}
 
 		if [[ $partial_version == "$major" || $partial_version == "$major_minor" ]]; then
-			echo "$version"
+			# shellcheck disable=2034
+			full_version_ref=$v
 			return
 		fi
 	done < <(parse_index "$index")
@@ -218,28 +237,40 @@ get_full_version() {
 	return 1
 }
 
+# @param validate_version_ref
 # @param version - Can be in short or long format or just "lts".
 validate_version() {
-	local -r version=${1/#v/}
+	local -rn validate_version_ref=$1
+	local -r v=${2/#v/}
 
-	if [[ $version == lts ]]; then
-		get_lts_version
-	elif [[ $version =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
-		get_full_version "$version"
-	elif [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-		echo "$version"
-	else
-		print_error 'Invalid version.' >&2
-		return 1
+	if [[ $v == lts ]]; then
+		local index
+		set_index index || return $?
+		set_lts_version validate_version_ref "$index"
+		return
 	fi
+
+	if [[ $v =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+		set_full_version validate_version_ref "$v"
+		return
+	fi
+
+	if [[ $v =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+		# shellcheck disable=2034
+		validate_version_ref=$v
+		return
+	fi
+
+	print_error 'Invalid version.' >&2
+	return 1
 }
 
 # Print versions installed based on the directory names in `$VERSIONS_DIR`.
 list_installed_versions() {
 	shopt -s nullglob
 
-	local dir version current_version output
-	current_version=$(get_current_version)
+	local current_version dir version output
+	set_current_version current_version
 	mkdir -p "$VERSIONS_DIR"
 
 	for dir in "$VERSIONS_DIR"/*; do
@@ -252,8 +283,8 @@ list_installed_versions() {
 
 list_remote_versions() {
 	local index lts_version version lts output
-	index=$(get_index) || return $?
-	lts_version=$(get_lts_version 2>/dev/null)
+	set_index index || return $?
+	set_lts_version lts_version "$index" 2> /dev/null
 
 	while IFS=$' ' read -r version lts; do
 		output=''
@@ -312,6 +343,7 @@ download_version() {
 		fi
 	fi
 
+	trap 'rm -f "$tmp_archive"' RETURN
 	mkdir -p "$TEMP_DIR" "$version_dir"
 	download_file "https://nodejs.org/dist/v$version/$server_archive" "$tmp_archive" &&
 		cd "$TEMP_DIR" &&
@@ -319,7 +351,6 @@ download_version() {
 		extract_version "$version_dir" "$tmp_archive"
 
 	local -ri status=$?
-	rm -f "$tmp_archive"
 	(( status != 0 )) && rm -rf "${version_dir:?}"
 	return $status
 }
@@ -328,20 +359,21 @@ download_version() {
 # @param omit_use_message - Pass "true" to not print a message showing how to use the newly installed version.
 install_version() {
 	local version platform arch archive_ext
-	version=$(validate_version "$1") || return $?
+	validate_version version "$1" || return $?
 
 	if is_version_installed "$version"; then
 		echo -e "Version ${CLR_ERROR}${version}${CLR_} is already installed." >&2
 		return 1
 	fi
 
-	platform=$(detect_platform) || return $?
-	arch=$(detect_architecture) || return $?
-	archive_ext=$(get_archive_extension) || return $?
+	detect_platform platform || return $?
+	detect_architecture arch || return $?
+	set_archive_extension archive_ext || return $?
 
 	local -r omit_use_message=$2
 	local -r server_archive="node-v${version}-${platform}-${arch}.tar.${archive_ext}"
 
+	echo -e "Installing version ${CLR_VERSION}${version}${CLR_}..."
 	download_version "$version" "$server_archive" || return $?
 	echo -e "Version ${CLR_VERSION}${version}${CLR_} was successfully installed."
 
@@ -353,8 +385,8 @@ install_version() {
 # @param version
 use_version() {
 	local version current_version
-	version="$(validate_version "$1")" || return $?
-	current_version=$(get_current_version)
+	validate_version version "$1" || return $?
+	set_current_version current_version
 
 	if [[ $version == "$current_version" ]]; then
 		echo "Version ${CLR_VERSION}${version}${CLR_} is already the current version."
@@ -363,19 +395,19 @@ use_version() {
 
 	if ! is_version_installed "$version"; then
 		confirm "Version ${CLR_VERSION}${version}${CLR_} is not installed. Install it?" || return 1
-		install_version "$version" "true" || return $?
+		install_version "$version" 'true' || return $?
 	fi
 
-	rm -f "$CURRENT_VERSION_LINK"
-	ln -sr "$VERSIONS_DIR/$version/bin" "$CURRENT_VERSION_LINK" || return $?
-	echo -e "Current node version was set to ${CLR_VERSION}${version}${CLR_}."
+	rm -f "$CURRENT_VERSION_LINK" &&
+		ln -sr "$VERSIONS_DIR/$version/bin" "$CURRENT_VERSION_LINK" &&
+		echo -e "Current node version was set to ${CLR_VERSION}${version}${CLR_}."
 }
 
 # @param version
 remove_version() {
 	local version current_version
-	version="$(validate_version "$1")" || return $?
-	current_version=$(get_current_version 2>/dev/null)
+	validate_version version "$1" || return $?
+	set_current_version current_version
 
 	if ! is_version_installed "$version"; then
 		echo -e "Version ${CLR_ERROR}${version}${CLR_} is not installed." >&2
@@ -383,8 +415,8 @@ remove_version() {
 	fi
 
 	[[ $version == "$current_version" ]] && rm -f "$CURRENT_VERSION_LINK"
-	rm -rf "${VERSIONS_DIR:?}/$version"
-	echo -e "Version ${CLR_VERSION}${version}${CLR_} was removed."
+	rm -rf "${VERSIONS_DIR:?}/$version" &&
+		echo -e "Version ${CLR_VERSION}${version}${CLR_} was removed."
 }
 
 clear_cache() {
@@ -403,7 +435,7 @@ clear_cache() {
 # STOP HERE when running unit tests.
 [[ -n $MARZA_TESTING ]] && return
 
-if (($# == 0)); then
+if (( $# == 0 )); then
 	echo -e "Please provide a ${CLR_ERROR}subcommand${CLR_}. Run ${CLR_ERROR}marza help${CLR_} for more info." >&2
 	exit 1
 fi
